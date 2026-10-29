@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 350
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +70,6 @@ jobs:
           cd $W/out
           tar czf assets.tar.gz -C assets .
           up() { for i in 1 2 3 4 5; do gh release upload "$TAG" "$1" --clobber && return 0; sleep 20; done; return 1; }
-          up index.bin; up meta.json; up assets.tar.gz
+          up index.bin; up titles.bin; up meta.json; up assets.tar.gz
           gzip -9 -c idx-redirects.tsv > redirects.tsv.gz || true
           ls -la

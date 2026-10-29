@@ -4,7 +4,9 @@
 Reads a Kiwix/openZIM file (new namespace scheme, zstd clusters) directly
 (own parser, no libzim needed), and writes:
   out/packs/pNNN.bin   concatenated per-entry gzip blobs (each <= PACK_MAX bytes)
-  out/index.bin        16384 gzipped TSV shards, concatenated
+  out/index.bin        16384 TSV shards (raw), concatenated
+  out/titles.bin       all titles sorted (UTF-16 order), '\n' separated, in blocks
+                       (for prefix search; block start keys in meta.json)
   out/meta.json        shard offset table + pack list + stats
   out/assets/          _mw_/ and _res_/ static files for the Worker
 
@@ -25,6 +27,8 @@ SHARDS = 16384
 PACK_MAX = int(os.environ.get("PACK_MAX", str(1_900_000_000)))
 NWORK = int(os.environ.get("NWORK", str(os.cpu_count() or 2)))
 SNAPSHOT = os.environ.get("SNAPSHOT", "2026-06")
+SHARD_GZ = int(os.environ.get("SHARD_GZ", "0"))
+TBLOCK = int(os.environ.get("TBLOCK", "384"))
 
 def fnv1a(b: bytes) -> int:
     h = 0x811C9DC5
@@ -357,21 +361,39 @@ def main():
         pr.join()
     os.remove(bcf)
 
-    # build sharded index
+    # build sharded index (raw TSV shards: the Worker never has to decompress)
     shards = [[] for _ in range(SHARDS)]
+    allp = []
     names = sorted(x for x in os.listdir(outdir) if x.startswith("idx-") and x.endswith(".tsv"))
     for nm in names:
         with open(os.path.join(outdir, nm), encoding="utf-8") as f:
             for line in f:
-                p = line.split("\t", 1)[0]
+                p, rest = line.split("\t", 1)
                 shards[fnv1a(p.encode("utf-8")) & (SHARDS - 1)].append(line)
+                if not p.startswith("_"):
+                    allp.append(p + ("\t" + rest.rstrip("\n") if rest.startswith(">") else ""))
     offs = [0]
     with open(os.path.join(outdir, "index.bin"), "wb") as f:
         for s in shards:
             s.sort()
-            g = gz("".join(s).encode("utf-8"))
+            g = "".join(s).encode("utf-8")
+            if SHARD_GZ:
+                g = gz(g)
             f.write(g)
             offs.append(offs[-1] + len(g))
+    del shards
+    # sorted title list for prefix search, in blocks; first key of each block
+    # goes into the Worker bundle. Sorted by UTF-16 code units (= JS order).
+    allp.sort(key=lambda x: x.split("\t", 1)[0].encode("utf-16-be"))
+    tkeys, toffs = [], [0]
+    with open(os.path.join(outdir, "titles.bin"), "wb") as f:
+        for i in range(0, len(allp), TBLOCK):
+            blk = allp[i:i + TBLOCK]
+            tkeys.append(blk[0].split("\t", 1)[0])
+            b = ("\n".join(blk) + "\n").encode("utf-8")
+            f.write(b)
+            toffs.append(toffs[-1] + len(b))
+    articles = sum(1 for x in allp if "\t>" not in x)
     packs = sorted(os.path.basename(x) for x in os.listdir(os.path.join(outdir, "packs")) if x.endswith(".bin"))
     meta = {
         "snapshot": SNAPSHOT,
@@ -380,6 +402,11 @@ def main():
         "packs": packs,
         "pack_sizes": {p: os.path.getsize(os.path.join(outdir, "packs", p)) for p in packs},
         "index_size": offs[-1],
+        "shard_gz": bool(SHARD_GZ),
+        "title_keys": tkeys,
+        "title_offsets": toffs,
+        "titles_size": toffs[-1],
+        "articles": articles,
         "entries": sum(v[0] for v in stats.values()),
         "raw_bytes": sum(v[1] for v in stats.values()),
         "gz_bytes": sum(v[2] for v in stats.values()),
@@ -388,7 +415,7 @@ def main():
     }
     with open(os.path.join(outdir, "meta.json"), "w") as f:
         json.dump(meta, f)
-    print("META", json.dumps({k: v for k, v in meta.items() if k != "shard_offsets"}), flush=True)
+    print("META", json.dumps({k: v for k, v in meta.items() if k not in ("shard_offsets", "title_keys", "title_offsets")}), flush=True)
 
 if __name__ == "__main__":
     main()
