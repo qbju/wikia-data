@@ -1,0 +1,8 @@
+/* Wikiあ additions */
+#wa-bar{display:flex;flex-wrap:wrap;align-items:center;gap:.6em;padding:.45em 1em;border-bottom:1px solid #c8ccd1;background:#f8f9fa;font-size:.95rem;font-family:sans-serif}
+#wa-bar .wa-logo{font-weight:bold;font-size:1.15rem;color:#202122;text-decoration:none;margin-right:.4em}
+#wa-bar form{display:flex;gap:.3em;flex:1;max-width:28em}
+#wa-bar input{flex:1;min-width:6em;padding:.3em .5em;border:1px solid #a2a9b1;border-radius:2px;font-size:1rem}
+#wa-bar button{padding:.3em .8em;border:1px solid #a2a9b1;background:#fff;border-radius:2px;cursor:pointer}
+.wa-foot{font-size:.85em;color:#54595d;line-height:1.6}
+@media (prefers-color-scheme:dark){#wa-bar{background:#1b1b1b;border-color:#444}#wa-bar .wa-logo{color:#eee}}

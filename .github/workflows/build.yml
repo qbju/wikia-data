@@ -1,0 +1,74 @@
+name: build-packs
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: release tag to upload to
+        default: v2026-06
+      limit_clusters:
+        description: process only the first N clusters (0 = all)
+        default: "0"
+      zim_url:
+        default: https://ftpmirror.your.org/pub/kiwix/zim/wikipedia/wikipedia_ja_all_nopic_2026-06.zim
+      zim_sha256:
+        default: ca34251cbb1f45155a6d7e7ea8effc1b655f80505e2b8a0774140ec8d40e3f33
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: free disk
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          df -h
+          A=$(df --output=avail -B1 / | tail -1); B=$(df --output=avail -B1 /mnt 2>/dev/null | tail -1 || echo 0)
+          if [ "${B:-0}" -gt "$A" ]; then sudo mkdir -p /mnt/w && sudo chown $USER /mnt/w && echo "W=/mnt/w" >> $GITHUB_ENV; else mkdir -p $HOME/w && echo "W=$HOME/w" >> $GITHUB_ENV; fi
+          nproc; free -g
+      - name: deps
+        run: pip install zstandard
+      - name: download zim
+        run: |
+          cd $W
+          curl -sSL --retry 5 -C - -o ja.zim "${{ inputs.zim_url }}"
+          ls -la ja.zim
+          echo "${{ inputs.zim_sha256 }}  ja.zim" | sha256sum -c -
+          df -h $W
+      - name: ensure release
+        run: gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "Wikiあ data packs"
+      - name: build + upload packs
+        run: |
+          cd $W
+          LIMIT_CLUSTERS=${{ inputs.limit_clusters }} NWORK=$(nproc) python3 $GITHUB_WORKSPACE/build/build.py ja.zim out > build.log 2>&1 &
+          BP=$!
+          touch out/packs-ready.txt 2>/dev/null || { sleep 30; touch out/packs-ready.txt; }
+          up() { for i in 1 2 3 4 5; do gh release upload "$TAG" "$1" --clobber && return 0; echo "retry $1"; sleep 20; done; return 1; }
+          done_list=""
+          while :; do
+            alive=0; kill -0 $BP 2>/dev/null && alive=1
+            for f in $(cat out/packs-ready.txt 2>/dev/null); do
+              case " $done_list " in *" $f "*) continue;; esac
+              echo "upload $f $(stat -c %s $f)"; up "$f" && rm -f "$f" && done_list="$done_list $f"
+            done
+            tail -n 3 build.log
+            [ $alive = 0 ] && break
+            sleep 30
+          done
+          wait $BP; echo "build exit $?"
+          cat build.log | grep -v '^prog' | tail -50
+          for f in $(cat out/packs-ready.txt); do case " $done_list " in *" $f "*) ;; *) up "$f";; esac; done
+          test -f out/meta.json
+      - name: upload index + meta + assets
+        run: |
+          cd $W/out
+          tar czf assets.tar.gz -C assets .
+          up() { for i in 1 2 3 4 5; do gh release upload "$TAG" "$1" --clobber && return 0; sleep 20; done; return 1; }
+          up index.bin; up meta.json; up assets.tar.gz
+          gzip -9 -c idx-redirects.tsv > redirects.tsv.gz || true
+          ls -la
